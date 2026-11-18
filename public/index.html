@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hostel Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Sora:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>tailwind.config={theme:{extend:{colors:{teal:{50:'#eef2fb',700:'#2a4574',800:'#1d3557',900:'#16294a',950:'#0f1b33'},stone:{100:'#eef1f6',200:'#e1e6ef',300:'#cfd6e3'}}}}}</script>
+<style>h1,h2,h3{font-family:Sora,sans-serif;letter-spacing:-.01em}.rounded-xl.border{border-color:#e1e6ef;box-shadow:0 1px 3px rgba(15,27,51,.06)}
+.hero{background:#14213d;color:#fff;border-radius:16px;padding:28px;margin-bottom:24px}.cta{background:#fca311;color:#14213d;font-weight:700;border-radius:10px;padding:10px 18px;display:inline-block}
+button.bg-teal-800{background:#14213d}button.bg-teal-800:hover{background:#243a63}.b{padding:2px 10px;border-radius:99px;font-size:12px;font-weight:600}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #0d9488;outline-offset:2px}</style>
+</head>
+<body class="bg-stone-100 text-stone-800 md:flex min-h-screen" style="font-family:'DM Sans',system-ui,sans-serif">
+<aside class="md:w-56 shrink-0 bg-teal-950 text-teal-50 p-4 md:min-h-screen">
+  <h1 class="text-xl mb-1 text-white">Hostel Hub<span style="color:#fca311">.</span></h1><p class="text-xs text-teal-50/60 mb-5">Rooms, requests and records</p>
+  <nav id="nav" class="flex md:flex-col gap-1 flex-wrap"></nav>
+</aside>
+<main id="app" class="flex-1 p-5 md:p-8 max-w-5xl"></main>
+<dialog id="dlg" class="rounded-xl p-6 w-[92vw] max-w-md backdrop:bg-black/40"></dialog>
+<script src="features.js"></script>
+<script src="reports.js"></script>
+<script src="money.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let sess = JSON.parse(sessionStorage.s || 'null');
+const api = async (p, m = 'GET', b) => {
+  const r = await fetch('/api' + p, { method: m, headers: { 'Content-Type': 'application/json', ...(sess && { Authorization: sess.token }) }, body: b && JSON.stringify(b) });
+  const j = await r.json(); if (!r.ok) throw Error(j.error || 'Something went wrong'); return j;
+};
+const COL = { Pending:'bg-amber-100 text-amber-800', Approved:'bg-emerald-100 text-emerald-800', Rejected:'bg-red-100 text-red-800',
+  Vacant:'bg-emerald-100 text-emerald-800', Partial:'bg-sky-100 text-sky-800', Full:'bg-stone-300 text-stone-700', Maintenance:'bg-orange-100 text-orange-800' };
+const badge = s => `<span class="b ${COL[s]}">${s}</span>`;
+const I = 'w-full border rounded-lg px-3 py-2 bg-white', BTN = 'bg-teal-800 text-white rounded-lg px-4 py-2 hover:bg-teal-700', GHOST = 'border rounded-lg px-3 py-1.5 hover:bg-stone-200 text-sm';
+const field = (l, n, t = 'text', x = '') => `<label class="block text-sm mb-3">${l}<input name="${n}" type="${t}" class="${I} mt-1" ${x}></label>`;
+const sel = (l, n, opts, v) => `<label class="block text-sm mb-3">${l}<select name="${n}" class="${I} mt-1">${opts.map(o => `<option ${o == v ? 'selected' : ''}>${o}</option>`).join('')}</select></label>`;
+const fd = f => Object.fromEntries(new FormData(f));
+const toast = m => alert(m);
+const ask = () => 'Notification' in window && Notification.permission === 'default' && Notification.requestPermission();
+const push = (t, body) => 'Notification' in window && Notification.permission === 'granted' && new Notification(t, { body });
+const modal = h => { $('#dlg').innerHTML = h; $('#dlg').showModal(); };
+const closeM = () => $('#dlg').close();
+
+function nav() {
+  const L = !sess ? [['rooms','Rooms'],['book','Apply for a room'],['status','Check status'],['login','Sign in']]
+    : sess.role === 'manager' ? [['pending','Requests'],['mrooms','Rooms'],['students','Students'],...FEAT.navM,['out','Sent emails']] : [['me','My room'],...FEAT.navS];
+  $('#nav').innerHTML = L.map(([h, t]) => `<a href="#/${h}" class="px-3 py-2 rounded-lg hover:bg-teal-900 ${location.hash === '#/' + h ? 'bg-teal-800' : ''}">${t}</a>`).join('')
+    + (sess ? `<button onclick="logout()" class="px-3 py-2 rounded-lg hover:bg-teal-900 text-left">Sign out</button>` : '');
+}
+function logout() { sess = null; sessionStorage.removeItem('s'); location.hash = '#/rooms'; route(); }
+
+const V = {
+async rooms() {
+  const rs = await api('/rooms');
+  const beds = rs.reduce((a, r) => a + r.free, 0);
+  return `<div class="hero"><h2 class="text-3xl mb-2">${beds} beds open right now</h2><p class="mb-4 text-teal-50/80">Counts update as managers approve requests. Pick a room type and apply in two minutes.</p><a class="cta" href="#/book">Apply for a room</a></div><h2 class="text-xl mb-3">Rooms</h2>${filterBar()}
+  <div class="grid sm:grid-cols-2 gap-4">${rs.map(r => `<div data-type="${r.type}" class="bg-white rounded-xl p-4 border border-l-4 ${r.state === 'Full' || r.state === 'Maintenance' ? 'border-l-stone-300' : 'border-l-amber-400'}"><div class="flex justify-between"><b>Room ${esc(r.number)} · ${r.type}</b>${badge(r.state)}</div>
+  <p class="text-sm text-stone-600 mt-2">Floor ${r.floor} · Rs ${r.fee}/month · Wi-Fi, desk, shared bath</p><p class="mt-2">${r.free} of ${r.capacity} beds free</p></div>`).join('')}</div>`;
+},
+async book() {
+  const rs = await api('/rooms'), types = [...new Set(rs.map(r => r.type))];
+  setTimeout(() => $('#bf').onsubmit = async e => { e.preventDefault(); const d = fd(e.target); d.idProof = e.target.idProof.files[0]?.name || '';
+    try { const b = await api('/bookings', 'POST', d); $('#app').innerHTML = `<div class="bg-white rounded-xl p-6 border"><h2 class="text-xl font-semibold">Request sent</h2><p class="mt-2">Your reference ID is <b>${b.id}</b>. Keep it to check your status.</p></div>`; ask(); } catch (x) { toast(x.message); } });
+  return `<h2 class="text-2xl font-semibold mb-4">Apply for a room</h2><form id="bf" class="bg-white rounded-xl p-5 border grid sm:grid-cols-2 gap-x-4">
+  ${field('Full name','name','text','required')}${field('Student ID','studentId','text','required')}${field('Email','email','email','required')}${field('Phone','phone','tel','required')}
+  ${sel('Room type','roomType',types)}${field('Check-in date','checkIn','date','required')}${field('Emergency contact','emergency','text','required')}
+  <label class="block text-sm mb-3">ID proof<input name="idProof" type="file" accept="image/*,.pdf" class="${I} mt-1"></label>
+  <div class="sm:col-span-2"><button class="${BTN}">Send request</button></div></form>`;
+},
+async status() {
+  setTimeout(() => $('#sf').onsubmit = async e => { e.preventDefault(); const q = fd(e.target).q; sessionStorage.ref = q; ask(); await showStatus(q); });
+  return `<h2 class="text-2xl font-semibold mb-4">Check request status</h2><form id="sf" class="flex gap-2 mb-4"><input name="q" class="${I}" placeholder="Reference ID or email" required><button class="${BTN}">Check</button></form><div id="sr"></div>`;
+},
+login() {
+  setTimeout(() => $('#lf').onsubmit = async e => { e.preventDefault(); try { sess = await api('/login', 'POST', fd(e.target)); sessionStorage.s = JSON.stringify(sess); ask(); location.hash = sess.role === 'manager' ? '#/pending' : '#/me'; } catch (x) { toast(x.message); } });
+  return `<h2 class="text-2xl font-semibold mb-4">Sign in</h2><form id="lf" class="bg-white rounded-xl p-5 border max-w-sm">${sel('I am a','role',['student','manager'])}${field('Login ID','id','text','required')}${field('Password','password','password','required')}<button class="${BTN}">Sign in</button><p class="text-xs text-stone-500 mt-3">Managers: admin / admin123. Students use the ID and password from their approval email.</p></form>`;
+},
+async pending() {
+  const bs = await api('/bookings');
+  window._bs = bs;
+  return `<h2 class="text-2xl font-semibold mb-4">Booking requests</h2><div class="space-y-3">${bs.map(b => `<div class="bg-white rounded-xl p-4 border"><div class="flex justify-between flex-wrap gap-2"><b>${esc(b.name)} <span class="font-normal text-stone-500">${esc(b.studentId)}</span></b>${badge(b.status)}</div>
+  <p class="text-sm text-stone-600 mt-1">${esc(b.email)} · ${esc(b.phone)} · wants ${b.roomType} from ${b.checkIn} · emergency: ${esc(b.emergency)} · ID: ${esc(b.idProof || 'none')}</p><p class="text-xs text-stone-400">Ref ${b.id}${b.reason ? ' · Reason: ' + esc(b.reason) : ''}</p>
+  ${b.status === 'Pending' ? `<div class="mt-3 flex gap-2"><button class="${BTN}" onclick="approveM('${b.id}')">Approve</button><button class="${GHOST}" onclick="rejectM('${b.id}')">Reject</button></div>` : ''}</div>`).join('') || '<p>No requests yet.</p>'}</div>`;
+},
+async mrooms() {
+  const rs = await api('/manager/rooms'); window._rs = rs;
+  return `<div class="flex justify-between mb-4"><h2 class="text-2xl font-semibold">Rooms</h2><button class="${BTN}" onclick="roomM()">Add room</button></div>${filterBar()}
+  <div class="bg-white rounded-xl border overflow-x-auto"><table class="w-full text-sm"><tr class="text-left bg-stone-50"><th class="p-3">Room</th><th>Type</th><th>Floor</th><th>Fee</th><th>Occupancy</th><th>State</th><th></th></tr>
+  ${rs.map(r => `<tr data-type="${r.type}" class="border-t"><td class="p-3 font-medium">${esc(r.number)}</td><td>${r.type}</td><td>${r.floor}</td><td>${r.fee}</td>
+  <td><div class="flex gap-1">${Array.from({ length: r.capacity }, (_, i) => `<span class="w-4 h-4 rounded ${i < r.occupied ? 'bg-teal-700' : 'bg-stone-300'}" title="${i < r.occupied ? 'Occupied' : 'Vacant'}"></span>`).join('')}</div></td>
+  <td>${badge(r.state)}</td><td class="p-2 whitespace-nowrap"><button class="${GHOST}" onclick="roomM('${r.id}')">Edit</button> <button class="${GHOST}" onclick="delRoom('${r.id}')">Delete</button></td></tr>`).join('')}</table></div>`;
+},
+async students() {
+  setTimeout(() => $('#q').oninput = async e => { $('#sl').innerHTML = rows(await api('/students?q=' + encodeURIComponent(e.target.value))); });
+  const rows = ss => ss.map(s => `<tr class="border-t"><td class="p-3">${esc(s.name)}<div class="text-xs text-stone-500">${esc(s.studentId)} · ${s.loginId}</div></td><td>${esc(s.room)}</td><td>${s.checkIn}</td><td>${s.checkOut || 'Not set'}</td><td>${s.feeStatus}</td><td class="p-2"><button class="${GHOST}" onclick="checkout('${s.loginId}')">Check out</button></td></tr>`).join('') || '<tr><td class="p-3" colspan=6>No students found.</td></tr>';
+  return `<h2 class="text-2xl font-semibold mb-4">Students</h2><input id="q" class="${I} mb-4" placeholder="Search by name, student ID or login ID"><div class="bg-white rounded-xl border overflow-x-auto"><table class="w-full text-sm"><tr class="text-left bg-stone-50"><th class="p-3">Student</th><th>Room</th><th>Check-in</th><th>Check-out</th><th>Fee</th><th></th></tr><tbody id="sl">${rows(await api('/students'))}</tbody></table></div>`;
+},
+async out() {
+  const o = await api('/outbox');
+  return `<h2 class="text-2xl font-semibold mb-4">Sent emails (mock)</h2>${o.reverse().map(m => `<div class="bg-white rounded-xl p-4 border mb-3"><p class="text-sm text-stone-500">To ${esc(m.to)} · ${esc(m.subject)} · ${m.sent ? 'Delivered' : m.error ? 'Failed: ' + esc(m.error) : 'Mock only'}</p>${m.html}</div>`).join('') || '<p>Nothing sent yet.</p>'}`;
+},
+async me() {
+  const m = await api('/me'), s = m.student, r = m.room; window._me = s.feeStatus + s.roomId;
+  return `<h2 class="text-2xl font-semibold mb-4">Hello, ${esc(s.name)}</h2><div class="grid sm:grid-cols-2 gap-4">
+  <div class="bg-white rounded-xl p-4 border"><b>Your room</b><p class="text-3xl mt-2">${esc(r?.number)}</p><p class="text-sm text-stone-600">${r?.type}, floor ${r?.floor} · ${r?.occupied}/${r?.capacity} beds taken</p><p class="mt-2 text-sm">Roommates: ${m.roommates.map(esc).join(', ') || 'none yet'}</p></div>
+  <div class="bg-white rounded-xl p-4 border"><b>Fees</b><p class="mt-2">Rs ${r?.fee}/month</p><p class="mt-1">${s.feeStatus === 'Due' ? '<span class="b bg-amber-100 text-amber-800">Due</span>' : '<span class="b bg-emerald-100 text-emerald-800">Paid</span>'}</p><p class="text-sm mt-2 text-stone-600">Check-in ${s.checkIn}${s.checkOut ? ' · Check-out ' + s.checkOut : ''}</p></div>
+  <div class="bg-white rounded-xl p-4 border sm:col-span-2"><b>Hostel rules</b><ul class="list-disc ml-5 mt-2 text-sm">${m.rules.map(x => `<li>${x}</li>`).join('')}</ul></div></div>`;
+}};
+
+Object.assign(V, FEAT.views);
+async function showStatus(q) {
+  try {
+    const l = await api('/status?q=' + encodeURIComponent(q)), el = $('#sr'); if (!el) return;
+    const sig = JSON.stringify(l.map(b => b.status)), old = sessionStorage.sig;
+    if (old && old !== sig) push('Hostel request updated', l[0].status);
+    sessionStorage.sig = sig;
+    el.innerHTML = l.map(b => `<div class="bg-white rounded-xl p-4 border mb-3"><div class="flex justify-between"><b>${b.id}</b>${badge(b.status)}</div><p class="text-sm mt-1">${b.roomType} room${b.status === 'Approved' ? '. Check your email for login details.' : ''}${b.reason ? '. Reason: ' + esc(b.reason) : ''}</p></div>`).join('');
+  } catch (x) { const el = $('#sr'); if (el) el.innerHTML = `<p class="text-red-700">${x.message}</p>`; }
+}
+
+async function approveM(id) {
+  const b = _bs.find(x => x.id === id), rs = (await api('/manager/rooms')).filter(r => r.free > 0);
+  modal(`<h3 class="font-semibold text-lg mb-3">Approve ${esc(b.name)}</h3><form id="af"><label class="block text-sm mb-3">Room (they asked for ${b.roomType})<select name="roomId" class="${I} mt-1">${rs.map(r => `<option value="${r.id}" ${r.type === b.roomType ? 'selected' : ''}>${r.number} · ${r.type} · ${r.free} free</option>`).join('')}</select></label>
+  <div class="flex gap-2"><button class="${BTN}">Approve and send email</button><button type="button" class="${GHOST}" onclick="closeM()">Cancel</button></div></form>`);
+  $('#af').onsubmit = async e => { e.preventDefault(); try { const r = await api(`/bookings/${id}/approve`, 'POST', fd(e.target)); closeM(); push('Approved', `${b.name} assigned to room ${r.room}`); toast(`Approved. Login ID ${r.loginId}, password ${r.password} (also emailed).`); route(); } catch (x) { toast(x.message); } };
+}
+function rejectM(id) {
+  modal(`<h3 class="font-semibold text-lg mb-3">Reject request</h3><form id="rf">${field('Reason','reason','text','required')}<div class="flex gap-2"><button class="${BTN}">Reject and notify</button><button type="button" class="${GHOST}" onclick="closeM()">Cancel</button></div></form>`);
+  $('#rf').onsubmit = async e => { e.preventDefault(); try { await api(`/bookings/${id}/reject`, 'POST', fd(e.target)); closeM(); route(); } catch (x) { toast(x.message); } };
+}
+function roomM(id) {
+  const r = id ? _rs.find(x => x.id === id) : { type: 'Single', capacity: 1, floor: 1, fee: 6000, status: 'Available' };
+  modal(`<h3 class="font-semibold text-lg mb-3">${id ? 'Edit' : 'Add'} room</h3><form id="mf">${field('Room number','number','text',`required value="${esc(r.number)}"`)}${sel('Type','type',['Single','Double','Triple'],r.type)}${field('Capacity','capacity','number',`min=1 value="${r.capacity}"`)}${field('Floor','floor','number',`value="${r.floor}"`)}${field('Monthly fee (Rs)','fee','number',`value="${r.fee}"`)}${sel('Status','status',['Available','Maintenance'],r.status)}
+  <div class="flex gap-2"><button class="${BTN}">Save room</button><button type="button" class="${GHOST}" onclick="closeM()">Cancel</button></div></form>`);
+  $('#mf').onsubmit = async e => { e.preventDefault(); try { await api(id ? '/rooms/' + id : '/rooms', id ? 'PUT' : 'POST', fd(e.target)); closeM(); route(); } catch (x) { toast(x.message); } };
+}
+async function delRoom(id) { if (confirm('Delete this room?')) try { await api('/rooms/' + id, 'DELETE'); route(); } catch (x) { toast(x.message); } }
+async function checkout(id) { if (confirm('Check this student out?')) { await api(`/students/${id}/checkout`, 'POST'); route(); } }
+
+async function route() {
+  const h = (location.hash.slice(2) || 'rooms');
+  const guard = { pending: 'manager', mrooms: 'manager', students: 'manager', out: 'manager', me: 'student', ...FEAT.guard }[h];
+  const page = guard && (!sess || sess.role !== guard) ? 'login' : h;
+  nav();
+  try { $('#app').innerHTML = await (V[page] || V.rooms)(); } catch (x) { $('#app').innerHTML = `<p class="text-red-700">${x.message}</p>`; if (/sign in/i.test(x.message)) logout(); }
+  if (page === 'status' && sessionStorage.ref) showStatus(sessionStorage.ref);
+}
+addEventListener('hashchange', route); route();
+
+// Poll for changes and raise native notifications
+setInterval(async () => {
+  try {
+    if (sess?.role === 'student') { const m = await api('/me'), sig = m.student.feeStatus + m.student.roomId; if (window._me && window._me !== sig) { push('Hostel update', 'Your room or fee details changed'); } window._me = sig; }
+    else if (sess?.role === 'manager') { const n = (await api('/bookings')).filter(b => b.status === 'Pending').length; if (window._pc !== undefined && n > window._pc) push('New booking request', `${n} pending`); window._pc = n; }
+    else if (location.hash === '#/status' && sessionStorage.ref) showStatus(sessionStorage.ref);
+  } catch {}
+}, 8000);
+</script>
+</body></html>
